@@ -1,0 +1,54 @@
+#!/usr/bin/env sh
+
+set -e
+
+USER=$(echo ${*} | sed -r "s,.*--user(=| )([^ ]+).*,\2,")
+test ${USER} || USER="mysql"
+HOME=$(echo ${*} | sed -r "s,.*--datadir(=| )([a-zA-Z0-9/]).*,\2,")
+test ${HOME} || HOME="/var/lib/mysql"
+
+MYSQLD_INFO=$(USER=${USER} HOME=${HOME} user-setup)
+MYSQLD_USER=$(echo ${MYSQLD_INFO} | awk "{print \$1}")
+MYSQLD_UID=$(echo ${MYSQLD_INFO} | awk "{print \$2}")
+MYSQLD_GID=$(echo ${MYSQLD_INFO} | awk "{print \$3}")
+MYSQLD_DATADIR=$(echo ${MYSQLD_INFO} | awk "{print \$4}")
+
+chown ${MYSQL_UID}:${MYSQL_GID} /var/run/mysqld
+chown ${MYSQL_UID}:${MYSQL_GID} /var/log/mysql
+
+export MYSQL_PARAMS="${*} --datadir=${MYSQLD_DATADIR} --user=${MYSQLD_USER}"
+
+if [ -z "$(ls ${MYSQLD_DATADIR})" ]; then
+    mysql_install_db ${MYSQL_PARAMS}
+
+    mysqld ${MYSQL_PARAMS} > /dev/null 2> /dev/null&
+    while true; do mysql -e"exit" && break || sleep 1; done
+
+    if [ -n "${MYSQL_USER}" ]; then
+        echo "Creating user ${MYSQL_USER}..."
+        mysql -e "create user '${MYSQL_USER}'@'%' identified by '${MYSQL_PASSWORD}';"
+    fi
+
+    if [ -n "${MYSQL_DATABASE}" ]; then
+        echo "Creating database ${MYSQL_DATABASE}..."
+        mysql -e "create database if not exists '${MYSQL_DATABASE}';"
+    fi
+
+    if [ -n "${MYSQL_USER}" -a -n "${MYSQL_DATABASE}" ]; then
+        echo "Let ${MYSQL_USER} manage ${MYSQL_DATABASE}..."
+        mysql -e "grant all privileges on '${MYSQL_DATABASE}'.* to '${MYSQL_USER}' with grant option;"
+    fi
+
+    echo "Fixing root..."
+    mysql -e"create user 'root'@'%' identified by '${MYSQL_ROOT_PASSWORD}';"
+    mysql -e"grant all privileges on $(echo '*.*') to 'root'@'%' with grant option;"
+    mysql -e"flush privileges;"
+    mysql -e"repair table mysql.user;"
+
+    killall -9 mysqld
+    while true; do mysql -e"exit" 2> /dev/null && sleep 1 || break; done
+fi
+
+mysqld ${MYSQL_PARAMS} &
+trap "kill mysqld" INT
+while true; do sleep 1; done
